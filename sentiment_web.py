@@ -152,7 +152,19 @@ def load_or_train_model(processed_texts, labels):
 def get_vader_analyzer():
     return SentimentIntensityAnalyzer()
 
-# Prediction function
+# Add sarcasm cue phrases
+sarcasm_cues = [
+    'oh great', 'just what i needed', 'yeah right', 'as if', 'totally worth it',
+    'love wasting time', 'can’t wait to never see this again', 'fantastic... not', 'what a treat', 'wonderful... not'
+]
+
+# Add neutral keywords
+neutral_indicators = ['okay', 'average', 'meh', 'so so', 'decent', 'fine', 'not bad', 'alright']
+
+# Add negation words for sarcasm context
+negation_words = ['not', 'never', 'don’t', 'didn’t', 'no']
+
+# Modify prediction function with sarcasm and neutral handling
 @lru_cache(maxsize=100)
 def predict_sentiment_hybrid(text, log=False):
     debug_log = []
@@ -161,47 +173,81 @@ def predict_sentiment_hybrid(text, log=False):
     if log:
         debug_log.append(f"Processed text: {processed}")
         debug_log.append(f"Words: {words}")
-    
+
+    # Check sarcasm layer first
+    text_lower = text.lower()
+    sarcasm_detected = any(phrase in text_lower for phrase in sarcasm_cues)
+    if sarcasm_detected:
+        # Check for positive words to avoid false negatives
+        strong_positive = ['adore', 'love', 'amazing', 'great', 'awesome', 'happy']
+        has_positive = any(word in strong_positive for word in words)
+        # Check for negation to confirm sarcasm
+        has_negation = any(word in text_lower for word in negation_words)
+        if has_positive and has_negation:
+            if log:
+                debug_log.append("Sarcasm cue with negation detected, forcing negative sentiment.")
+            return 'negative', 0.85, debug_log
+        elif has_positive and not has_negation:
+            if log:
+                debug_log.append("Sarcasm cue detected but positive sentiment present, proceeding to heuristic check.")
+        else:
+            if log:
+                debug_log.append("Sarcasm cue detected, forcing negative sentiment.")
+            return 'negative', 0.85, debug_log
+
+    # Heuristic keyword layer
     strong_positive = ['adore', 'love', 'amazing', 'great', 'awesome', 'happy']
     strong_negative = ['hate', 'terrible', 'awful', 'bad', 'horrible', 'upset', 'sad', 'disappointed', 'depressed', 'frustrated', 'annoyed']
-    if log:
-        debug_log.append(f"Checking strong_positive: {any(word in strong_positive for word in words)}")
-        debug_log.append(f"Checking strong_negative: {any(word in strong_negative for word in words)}")
     if any(word in strong_positive for word in words):
+        if log:
+            debug_log.append("Strong positive keyword detected.")
         return 'positive', 0.9, debug_log
     if any(word in strong_negative for word in words):
+        if log:
+            debug_log.append("Strong negative keyword detected.")
         return 'negative', 0.9, debug_log
-    
+
+    # Check for neutral indicators
+    if any(word in words for word in neutral_indicators):
+        if log:
+            debug_log.append("Neutral indicator detected, forcing neutral sentiment.")
+        return 'neutral', 0.8, debug_log
+
+    # Fallbacks for short/unknown inputs or weak confidence
     if len(words) <= 2 or any(word not in vectorizer.vocabulary_ for word in words):
         if log:
-            debug_log.append("Using VADER")
+            debug_log.append("Using VADER due to short or unknown input")
         scores = sid.polarity_scores(text)
         compound = scores['compound']
-        if compound >= 0.05:
+        if compound > 0.1:  # Tightened threshold for clearer sentiment
             return 'positive', min(abs(compound) * 2.0, 0.99), debug_log
-        elif compound <= -0.05:
+        elif compound < -0.1:
             return 'negative', min(abs(compound) * 2.0, 0.99), debug_log
         else:
             return 'neutral', abs(compound), debug_log
-    
+
+    # Model prediction
     X_new = vectorizer.transform([processed])
     prediction = model.predict(X_new)[0]
     probability = model.predict_proba(X_new)[0]
     prob_dict = {model.classes_[i]: prob for i, prob in enumerate(probability)}
     confidence = prob_dict[prediction]
+
     if log:
         debug_log.append(f"Model prediction: {prediction}, {confidence:.2%}")
-    if confidence < 0.6:
+
+    if confidence < 0.6 or prediction == 'neutral':
         if log:
-            debug_log.append("Model confidence too low, using VADER")
+            debug_log.append("Model confidence too low or neutral, using VADER")
         scores = sid.polarity_scores(text)
         compound = scores['compound']
-        if compound >= 0.05:
+        if compound > 0.1:
             return 'positive', min(abs(compound) * 2.0, 0.99), debug_log
-        elif compound <= -0.05:
+        elif compound < -0.1:
             return 'negative', min(abs(compound) * 2.0, 0.99), debug_log
         else:
             return 'neutral', abs(compound), debug_log
+
     return prediction, confidence, debug_log
 
 # Streamlit interface
