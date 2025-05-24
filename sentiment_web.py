@@ -164,6 +164,9 @@ neutral_indicators = ['okay', 'average', 'meh', 'so so', 'decent', 'fine', 'not 
 # Add negation words for sarcasm context
 negation_words = ['not', 'never', 'don’t', 'didn’t', 'no']
 
+# Add negative adjectives for sarcasm and criticism
+negative_adjectives = ['wooden', 'lame', 'boring', 'dull', 'stupid', 'ridiculous', 'pathetic']
+
 # Modify prediction function with sarcasm and neutral handling
 @lru_cache(maxsize=100)
 def predict_sentiment_hybrid(text, log=False):
@@ -195,9 +198,17 @@ def predict_sentiment_hybrid(text, log=False):
                 debug_log.append("Sarcasm cue detected, forcing negative sentiment.")
             return 'negative', 0.85, debug_log
 
+    # Check for negative adjectives (for sarcasm or criticism)
+    if any(word in negative_adjectives for word in words):
+        # Look for exaggeration or comparison indicating sarcasm
+        if 'like' in words or 'thought' in words or 'so' in words:
+            if log:
+                debug_log.append("Negative adjective with exaggeration/comparison detected, likely sarcasm.")
+            return 'negative', 0.85, debug_log
+
     # Heuristic keyword layer
     strong_positive = ['adore', 'love', 'amazing', 'great', 'awesome', 'happy']
-    strong_negative = ['hate', 'terrible', 'awful', 'bad', 'horrible', 'upset', 'sad', 'disappointed', 'depressed', 'frustrated', 'annoyed']
+    strong_negative = ['hate', 'terrible', 'awful', 'bad', 'horrible', 'upset', 'sad', 'disappointed', 'depressed', 'frustrated', 'annoyed', 'wooden']
     if any(word in strong_positive for word in words):
         if log:
             debug_log.append("Strong positive keyword detected.")
@@ -224,6 +235,11 @@ def predict_sentiment_hybrid(text, log=False):
         elif compound < -0.1:
             return 'negative', min(abs(compound) * 2.0, 0.99), debug_log
         else:
+            # Secondary check for negative adjectives if VADER is neutral
+            if any(word in negative_adjectives for word in words):
+                if log:
+                    debug_log.append("VADER neutral but negative adjective detected, forcing negative sentiment.")
+                return 'negative', 0.7, debug_log
             return 'neutral', abs(compound), debug_log
 
     # Model prediction
@@ -246,6 +262,11 @@ def predict_sentiment_hybrid(text, log=False):
         elif compound < -0.1:
             return 'negative', min(abs(compound) * 2.0, 0.99), debug_log
         else:
+            # Secondary check for negative adjectives if VADER is neutral
+            if any(word in negative_adjectives for word in words):
+                if log:
+                    debug_log.append("VADER neutral but negative adjective detected, forcing negative sentiment.")
+                return 'negative', 0.7, debug_log
             return 'neutral', abs(compound), debug_log
 
     return prediction, confidence, debug_log
