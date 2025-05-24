@@ -12,13 +12,15 @@ from nltk.corpus import stopwords
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 import streamlit as st
 from functools import lru_cache
+import tarfile
+import urllib.request
 
-# Safe NLTK downloads
+# Download NLTK data
 def safe_nltk_download(resource, resource_path):
     try:
         nltk.data.find(resource_path)
     except LookupError:
-        nltk.download(resource)
+        nltk.download(resource, quiet=True)
 
 safe_nltk_download('punkt', 'tokenizers/punkt')
 safe_nltk_download('stopwords', 'corpora/stopwords')
@@ -28,10 +30,12 @@ safe_nltk_download('vader_lexicon', 'sentiment/vader_lexicon')
 # Function to read IMDB dataset
 def read_imdb(data_dir, is_train, max_samples=None):
     data, labels = [], []
+    split = 'train' if is_train else 'test'
     for label in ('pos', 'neg'):
-        folder_name = os.path.join(data_dir, 'train' if is_train else 'test', label)
+        folder_name = os.path.join(data_dir, split, label)
         if not os.path.exists(folder_name):
-            raise FileNotFoundError(f"Directory not found: {folder_name}")
+            st.error(f"Dataset directory not found: {folder_name}. Please ensure the dataset is downloaded.")
+            return [], []  # Return empty lists to prevent crash
         files = os.listdir(folder_name)
         samples_to_read = min(len(files), max_samples // 2 if max_samples else len(files))
         for file in files[:samples_to_read]:
@@ -62,9 +66,40 @@ def preprocess_text(text):
 
 # Cache data loading
 @st.cache_data
-def load_and_preprocess_data(data_dir, max_samples=5000):
-    train_data, train_labels = read_imdb(data_dir, is_train=True, max_samples=max_samples)
-    test_data, test_labels = read_imdb(data_dir, is_train=False, max_samples=max_samples)
+def load_and_preprocess_data(max_samples=2000):
+    data_dir = "aclImdb"
+    dataset_url = "http://ai.stanford.edu/~amaas/data/sentiment/aclImdb_v1.tar.gz"
+    dataset_tar = "aclImdb_v1.tar.gz"
+    
+    # Ensure directory exists by downloading and extracting
+    if not os.path.exists(data_dir):
+        with st.spinner("Downloading IMDB dataset..."):
+            try:
+                urllib.request.urlretrieve(dataset_url, dataset_tar)
+                with tarfile.open(dataset_tar, "r:gz") as tar:
+                    tar.extractall()
+                os.remove(dataset_tar)
+            except Exception as e:
+                st.error(f"Failed to download or extract dataset: {e}")
+                return [], []  # Return empty lists to prevent crash
+    
+    # Check if train/pos directory exists after extraction
+    if not os.path.exists(os.path.join(data_dir, "train", "pos")):
+        st.error("Dataset extraction failed: train/pos directory not found.")
+        return [], []
+    
+    # Proceed with data loading
+    try:
+        train_data, train_labels = read_imdb(data_dir, is_train=True, max_samples=max_samples)
+        test_data, test_labels = read_imdb(data_dir, is_train=False, max_samples=max_samples)
+    except Exception as e:
+        st.error(f"Failed to read dataset: {e}")
+        return [], []
+    
+    if not train_data or not test_data:
+        st.error("No data loaded from the dataset.")
+        return [], []
+    
     texts = train_data + test_data
     labels = train_labels + test_labels
     
@@ -94,7 +129,6 @@ def load_or_train_model(processed_texts, labels):
     vectorizer_path = "vectorizer.pkl"
     
     if os.path.exists(model_path) and os.path.exists(vectorizer_path):
-        print("Loading precomputed model and vectorizer...")
         vectorizer = joblib.load(vectorizer_path)
         model = joblib.load(model_path)
         X = vectorizer.transform(processed_texts)
@@ -102,7 +136,6 @@ def load_or_train_model(processed_texts, labels):
         y_pred = model.predict(X_test)
         accuracy = accuracy_score(y_test, y_pred)
     else:
-        print("Training new model...")
         vectorizer = TfidfVectorizer(max_features=5000, ngram_range=(1, 2), min_df=1)
         X = vectorizer.fit_transform(processed_texts)
         X_train, X_test, y_train, y_test = train_test_split(X, labels, test_size=0.2, random_state=42)
@@ -178,9 +211,11 @@ def main():
     st.markdown("Enter a sentence to analyze its sentiment using our AI trained on the IMDB dataset.")
 
     # Load data and model
-    data_dir = "C:/Users/Amenn/Desktop/AI project/aclImdb"
     try:
-        processed_texts, labels = load_and_preprocess_data(data_dir, max_samples=5000)
+        processed_texts, labels = load_and_preprocess_data(max_samples=2000)
+        if not processed_texts or not labels:
+            st.error("Failed to load dataset. Please check the logs above.")
+            return
         global vectorizer, model, sid
         vectorizer, model, accuracy = load_or_train_model(processed_texts, labels)
         sid = get_vader_analyzer()
@@ -237,5 +272,4 @@ def main():
         st.text("\n".join(st.session_state.debug_log))
 
 if __name__ == "__main__":
-    print("\nStarting Sentiment Analysis Web Interface...")
     main()
